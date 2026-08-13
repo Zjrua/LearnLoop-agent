@@ -10,7 +10,7 @@
 skill-tree/
 ├── backend/                    FastAPI (Python)
 │   ├── main.py                 API: /api/graph, /api/task, /api/agent/chat(SSE), /api/ai/*, /api/rag/*
-│   ├── agent/                  AI Agent 内核(Planner→Executor→Writer + Reflexion)
+│   ├── agent/                  AI Agent 内核(意图分类→Executor→Writer + Reflexion)
 │   ├── rag/                    混合检索(源码 AST + 论文 + 图谱/简历)
 │   ├── larkpub.py              飞书文档产出(lark-cli subprocess)
 │   ├── layout.py / progress.py DAG 布局 + 掌握度纯函数

@@ -129,14 +129,16 @@ def summarize(events: list[dict]) -> dict:
     tools_used = {e["action"] for e in tool_calls}
     tool_errors = [e for e in events if e["type"] == "error"]
     thinking = [e.get("content", "") for e in events if e["type"] == "thinking"]
-    # Reflexion 触发:thinking 事件含"遗漏/自查/补充"
-    reflect_triggered = any(("遗漏" in t or "自查" in t) for t in thinking)
+    # Reflexion 续跑：reflect 判 not ok → loop 注入 gap 续跑，thinking 事件含「自查发现遗漏」。
+    # 注意：这测的是「自校验后发生续跑」的比例，不是「自校验被触发」的比例——
+    # _reflect 对 query/produce 的 final 答案无条件执行，触发率恒为 100%（设计如此）。
+    reflect_rerun = any("自查发现遗漏" in t for t in thinking)
     has_final = any(e["type"] == "final_done" for e in events)
     has_error = bool(tool_errors)
     return {
         "tools_used": sorted(tools_used),
         "n_tool_calls": len(tool_calls),
-        "reflect_triggered": reflect_triggered,
+        "reflect_rerun": reflect_rerun,
         "has_final": has_final,
         "has_error": has_error,
         "error": "; ".join(e.get("content", "") for e in tool_errors),
@@ -191,7 +193,7 @@ def main():
             "intent_ok": intent_ok,
             "exp_tools": sorted(exp_tools) if exp_tools else None,
             "tools_used": s["tools_used"], "tool_ok": tool_ok,
-            "reflect_triggered": s["reflect_triggered"],
+            "reflect_rerun": s["reflect_rerun"],
             "complete_ok": complete_ok,
             "wall_s": round(wall, 2),
             "error": s["error"],
@@ -199,7 +201,7 @@ def main():
         flag = "OK" if (intent_ok and tool_ok and complete_ok) else "XX"
         print(f"    -> 意图={intent_actual}({'' if intent_ok else 'X'}) "
               f"工具={s['tools_used'] or '-'}({'' if tool_ok else 'X'}) "
-              f"Reflex={s['reflect_triggered']} 完成={complete_ok} {wall:.1f}s [{flag}]")
+              f"Reflex续跑={s['reflect_rerun']} 完成={complete_ok} {wall:.1f}s [{flag}]")
         if s["error"]:
             print(f"       ERROR: {s['error'][:120]}")
 
@@ -208,7 +210,11 @@ def main():
     intent_acc = sum(r["intent_ok"] for r in results) / n
     tool_acc = sum(r["tool_ok"] for r in results) / n
     complete_rate = sum(r["complete_ok"] for r in results) / n
-    reflect_rate = sum(r["reflect_triggered"] for r in results) / n
+    # Reflexion 只对 query/produce 生效（chat 短路、mutate 走提案不 reflect），
+    # 续跑率的分母应为 query+produce 用例数，而非全部 13 条。
+    reflect_eligible = [r for r in results if r["exp_intent"] in ("query", "produce")]
+    reflect_rerun_rate = (sum(r["reflect_rerun"] for r in reflect_eligible) / len(reflect_eligible)
+                          if reflect_eligible else 0.0)
     avg_wall = sum(r["wall_s"] for r in results) / n
     # token:总 usage(全用例所有调用累计)
     total_prompt = sum(u.get("prompt_tokens", 0) for u in recorder.usages)
@@ -222,7 +228,7 @@ def main():
         "intent_accuracy": round(intent_acc, 4),
         "tool_call_success": round(tool_acc, 4),
         "task_complete_rate": round(complete_rate, 4),
-        "reflect_trigger_rate": round(reflect_rate, 4),
+        "reflect_rerun_rate": round(reflect_rerun_rate, 4),
         "avg_end_to_end_latency_s": round(avg_wall, 2),
         "avg_single_call_latency_s": round(avg_wall_chat, 2),
         "total_llm_calls": n_calls,

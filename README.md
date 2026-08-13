@@ -1,14 +1,14 @@
 # 自适应学习 Agent
 
-一个带**评估迭代闭环**的 AI Agent 系统：把学习路径规划、进度追踪、知识检索、文档产出串联成 Planner→Executor→Writer 三层架构，用 Reflexion 自校验保障可靠性，用 pytest + 黄金用例集把 Prompt 工程变成可测工程。
+一个带**评估迭代闭环**的 AI Agent 系统：把学习路径规划、进度追踪、知识检索、文档产出串成「意图分类 → 执行 → 产出」三层流程，用 Reflexion 自校验保障可靠性，用 pytest + 黄金用例集把 Prompt 工程变成可测工程。
 
-> 📄 **[系统设计文档（飞书）](https://my.feishu.cn/docx/M6FGdMITtoZenZxS8X5cRjXXnIQ)** — Agent 三层架构 / RAG 混合检索 / Reflexion 自校验 / 飞书文档产出闭环 / 评估方法论。
+> 📄 **[系统设计文档（飞书）](https://my.feishu.cn/docx/M6FGdMITtoZenZxS8X5cRjXXnIQ)** — Agent 三层流程 / RAG 混合检索 / Reflexion 自校验 / 飞书文档产出闭环 / 评估方法论。
 
 ## ✨ 核心能力
 
-- **分层 Agent**：Planner 意图分流 → Executor(ReAct) 工具循环 → Writer 文档产出，最大 6 步防发散
+- **分层 Agent**：意图分类（chat/query/mutate/produce）→ Executor(ReAct) 工具循环 → Writer 文档产出，最大 6 步防发散
 - **RAG 混合检索**：源码 AST 切 chunk 建向量索引，向量 + 图谱 + 论文三路融合，带引用编号
-- **Reflexion 自校验**：ReAct 草稿后插入自校验发现遗漏续跑（封顶 1 轮防卡死），实测触发率约 54%
+- **Reflexion 自校验**：ReAct 草稿后插入自校验发现遗漏续跑（封顶 1 轮防卡死），实测续跑率 87.5%（query/produce 路径）
 - **工具协议适配**：混合协议（原生 function calling 优先、指令式 ReAct 回退），一套代码适配多家 OpenAI 兼容供应商
 - **飞书产出闭环**：Writer 多模板差异化产出 → 飞书文档 → 知识库归档，端到端可演示
 - **评估迭代闭环**：134 个 pytest 用例 + 黄金用例集构成回归网，消融/参数扫描/Top-k 与 MRR 指标
@@ -21,8 +21,8 @@
 
 | 指标 | 实测值 |
 |------|--------|
-| Planner 意图分类准确率 | 13/13（chat/query/mutate/produce 四类全对）|
-| Reflexion 触发率 | 53.8%（query/produce 路径几乎全触发）|
+| 意图分类准确率 | 13/13（chat/query/mutate/produce 四类全对）|
+| Reflexion 续跑率 | 87.5%（query/produce 到达 final 的用例 7/8）|
 | 任务完成率 | 84.6%（11/13）|
 
 **RAG 召回（15 条查询集，源码 AST 索引）**
@@ -40,10 +40,10 @@
 | 层 | 技术 | 说明 |
 |----|------|------|
 | 前端 | React 18 + TypeScript + Vite | 单页应用，玉青宝石工坊美学，DAG 知识图谱 |
-| 后端 | FastAPI (Python) | 多用户隔离 + AI 生成引擎，零三方依赖(ai/layout/progress 纯标准库) |
-| Agent | Planner→Executor→Writer | ReAct 循环 + Reflexion 自校验 + 混合协议适配 |
+| 后端 | FastAPI (Python) | 单用户本地应用 + AI 生成引擎，零三方依赖(ai/layout/progress 纯标准库) |
+| Agent | 意图分类→Executor→Writer | ReAct 循环 + Reflexion 自校验 + 混合协议适配 |
 | RAG | 向量 + 图谱 + 论文 | 源码 AST 切 chunk，BM25 + 余弦相似度三路融合 |
-| 数据 | JSON 文件 | 每用户独立 `data/users/<id>/`，无数据库 |
+| 数据 | JSON 文件 | 单用户 `data/` 目录（桌面应用复制到 `~/.skill-tree/data/`），无数据库 |
 | 部署 | docker-compose / Tauri | 一键起 frontend(:5173) + backend(:8001)，或打包桌面应用 |
 
 ## 🚀 快速开始
@@ -72,8 +72,8 @@ npm run dev                # http://localhost:5173（代理 /api → :8000）
 **构建 RAG 知识库索引**（让 Agent 能检索你的开源项目源码；配好 LLM 后）：
 
 ```bash
-curl -X POST http://localhost:8000/api/rag/build-index -H "X-User-Id: default"
-curl http://localhost:8000/api/rag/status -H "X-User-Id: default"   # 查索引状态
+curl -X POST http://localhost:8000/api/rag/build-index
+curl http://localhost:8000/api/rag/status   # 查索引状态
 ```
 
 装 numpy 可加速向量检索（可选，不装也能跑，退化为纯标准库）：
@@ -97,7 +97,7 @@ pip install numpy
 
 - **工具调用**：自主决定读图谱进度 / 查节点 / 检索知识 / 加节点，混合协议（原生 function calling 优先，指令式回退）
 - **RAG 知识检索**：把 `../projects` 开源项目源码建成向量索引（AST 切 chunk），混合检索（向量 + 图谱 + 论文），带引用编号
-- **ReAct 推理循环**：Planner 意图分流 → Executor 工具循环 → Writer 文档产出，最大 6 步防发散
+- **ReAct 推理循环**：意图分类分流 → Executor 工具循环 → Writer 文档产出，最大 6 步防发散
 - **飞书文档产出**：一键把学习笔记 / 复习卡 / 周报发到飞书
 
 **飞书文档产出配置**（首次使用需登录）：
@@ -114,7 +114,7 @@ lark-cli --version         # 确认已安装（≥1.0.60）
 │   ├── backend/               FastAPI：API + Agent 内核(agent/) + RAG(rag/) + layout/progress(图谱)
 │   ├── frontend/              React+TS：DAG 图谱 + 多会话 AI 对话 + 侧栏四板块
 │   ├── desktop/               Tauri 桌面 shell(打包成 .msi/.dmg)
-│   ├── data/users/default/    单用户数据：方向树 JSON + profile + 成就 + llm_config
+│   ├── data/                  单用户数据：方向树 JSON + profile + 成就 + llm_config
 │   └── scripts/               桌面打包脚本
 ├── resume/                  ← 【果实】模块化 LaTeX 简历(本地,含个人信息,已 gitignore)
 │   ├── shared/                素材单一数据源(personal/education/experience/skills)
@@ -133,13 +133,13 @@ lark-cli --version         # 确认已安装（≥1.0.60）
 - **清单驱动掌握度**：每个知识点配验收任务（能默写/讲清/手算），验收全勾才算掌握
 - **悬停高亮学习路径**：悬停节点或方向标签 → 高亮上下游路径，其余淡化
 - **AI 生成技能树**：支持 DeepSeek/MiMo/智谱/Qwen/Moonshot/自定义，输入 JD 自动生成
-- **多用户隔离**：每用户独立数据目录，API Key 安全存储（gitignore 排除）
+- **单用户本地应用**：数据存本地 JSON 目录，API Key 本地存储（gitignore 排除），不打云部署
 - **成就系统**：铜/银/金三级，按掌握度/分支完成自动解锁
 - **侧栏 SPA**：技能树 / 个人信息 / 简历模板 / 果实展示 四板块 + 底部设置
 
 ## 设计原则
 
-- **改数据只动 JSON**：加技能/方向/成就只改 `data/users/<id>/`，浏览器刷新即生效
+- **改数据只动 JSON**：加技能/方向/成就只改 `data/` 对应 JSON，浏览器刷新即生效
 - **零依赖后端**：ai/layout/progress 纯 Python 标准库，Windows 直接能跑
 - **不填虚构技能**：节点默认 locked，由用户逐步推进
 - **平滑演进**：用户抽象层预留鉴权/加密钩子，将来加登录不改业务代码
