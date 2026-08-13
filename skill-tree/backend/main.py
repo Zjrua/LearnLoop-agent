@@ -98,8 +98,19 @@ BUILD_DIR = RESUME_DIR / "build"
 PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / ".skill-tree" / "projects"))
 
 app = FastAPI(title="Skill Tree API")
+
+# 收紧 CORS：后端只绑 127.0.0.1（entry.py 默认 host，不暴露公网），但仍需拒绝任意跨域站点
+# 通过用户浏览器打到本地后端（DNS rebinding / drive-by：读 API Key、改学习数据）。
+# 允许的 origin 限定在 localhost / 127.0.0.1 / [::1]（任意端口）+ Tauri webview 的 *.localhost / tauri://localhost。
+# 第三方域名（如 https://evil.com）不再能跨域读取本地数据。
+_LOCAL_ORIGIN_RE = (
+    r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+    r"|^https?://([a-z0-9-]+\.)*localhost(:\d+)?$"
+    r"|^tauri://localhost$"
+)
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, allow_origin_regex=_LOCAL_ORIGIN_RE,
+    allow_methods=["*"], allow_headers=["*"],
 )
 if PROJECTS_DIR.exists():
     app.mount("/projects", StaticFiles(directory=str(PROJECTS_DIR)), name="projects")
@@ -262,13 +273,24 @@ def llm_config_path() -> Path:
     return DATA_ROOT / "llm_config.json"
 
 
+def _saved_api_key() -> str:
+    """读已保存的 api_key（脱敏回显后，前端留空时后端补回真实 key 用）。"""
+    p = llm_config_path()
+    return _load_json(p).get("api_key", "") if p.exists() else ""
+
+
 @app.get("/api/llm-config")
 def get_llm_config() -> dict:
     p = llm_config_path()
     if not p.exists():
-        return {"provider": "", "base_url": "", "api_key": "", "model": "", "configured": False}
+        return {"provider": "", "base_url": "", "api_key": "", "model": "",
+                "configured": False, "has_api_key": False}
     cfg = _load_json(p)
-    cfg["configured"] = bool(cfg.get("api_key") and cfg.get("base_url"))
+    has_key = bool(cfg.get("api_key"))
+    # 不回显明文 api_key：本地后端仍可能被跨站脚本打进来读取，脱敏只回显「是否已配置」
+    cfg["api_key"] = ""
+    cfg["has_api_key"] = has_key
+    cfg["configured"] = has_key and bool(cfg.get("base_url"))
     return cfg
 
 
@@ -276,13 +298,17 @@ def get_llm_config() -> dict:
 def put_llm_config(cfg: LlmConfig) -> dict:
     p = llm_config_path()
     data = cfg.model_dump()
+    # 前端脱敏后不回显 key；留空 api_key 表示「保持原有 key 不变」
+    if not data.get("api_key") and p.exists():
+        data["api_key"] = _load_json(p).get("api_key", "")
     _save_json(p, data)
     return {"saved": True, "configured": bool(data["api_key"] and data["base_url"])}
 
 
 @app.post("/api/llm-config/test")
 def test_llm_config(cfg: LlmConfig) -> dict:
-    ok, msg = ai_mod.test_connection(cfg.base_url, cfg.api_key, cfg.model)
+    key = cfg.api_key or _saved_api_key()
+    ok, msg = ai_mod.test_connection(cfg.base_url, key, cfg.model)
     return {"ok": ok, "message": msg}
 
 
@@ -290,7 +316,7 @@ def test_llm_config(cfg: LlmConfig) -> dict:
 def list_models_api(cfg: LlmConfig) -> dict:
     """根据 base_url + api_key 拉取可用模型列表（OpenAI 兼容 /models）。"""
     try:
-        models = ai_mod.list_models(cfg.base_url, cfg.api_key)
+        models = ai_mod.list_models(cfg.base_url, cfg.api_key or _saved_api_key())
         return {"ok": True, "models": models}
     except Exception as e:
         return {"ok": False, "models": [], "error": str(e)}

@@ -103,7 +103,7 @@ export interface Fruit {
 
 // ── LLM 供应商/配置(工具条切换用) ──
 export interface Provider { id: string; label: string; base_url: string; model: string; json_mode: boolean }
-export interface LlmConfig { provider: string; base_url: string; api_key: string; model: string; configured?: boolean }
+export interface LlmConfig { provider: string; base_url: string; api_key: string; model: string; configured?: boolean; has_api_key?: boolean }
 
 // ── Agent 对话 ──
 export type AgentEvent =

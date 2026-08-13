@@ -8,7 +8,9 @@ from rag import store
 from rag import paper_fetch
 from rag.indexer import cosine, embed
 
-W_STRUCT = 0.4
+# 融合权重。实验 4（eval/RESULTS.md）显示 W_STRUCT=0.4 时结构化通道命中率 0%、0.5 时 100%——
+# 0.4 恰低于拐点，导致查图谱内容时被向量通道的系统性压制。取等权 0.5 消除该压制。
+W_STRUCT = 0.5
 W_VEC = 0.5
 W_EXT = 0.1
 
@@ -23,9 +25,24 @@ except Exception:
     _HAS_NUMPY = False
 
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
 def _tokens(q: str) -> list[str]:
-    """把查询切成关键词（中英混合）。"""
-    return [w for w in re.split(r"[\s,，、。./]+", q.lower()) if len(w) >= 2]
+    """把查询切成关键词（中英混合）。
+    英文/数字按空格与标点切词；中文按字符 bigram 切（零依赖）。
+    旧实现把整段中文当单个 token，导致中文 BM25 全失效（见 eval/RESULTS.md「中文分词」）。"""
+    out: list[str] = []
+    for seg in re.split(r"[\s,，、。./]+", q.lower()):
+        for w in re.findall(r"[a-z0-9_]+", seg):
+            if len(w) >= 2:
+                out.append(w)
+        cjk = _CJK_RE.findall(seg)
+        if len(cjk) == 1:
+            out.append(cjk[0])
+        else:
+            out.extend("".join(cjk[i:i + 2]) for i in range(len(cjk) - 1))
+    return out
 
 
 def _bm25(query_tokens: list[str], doc_tokens: list[str],

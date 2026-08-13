@@ -142,6 +142,39 @@ def test_loop_history_is_injected_into_messages():
     assert ("assistant", "建议学 DCN") in roles_content
 
 
+def test_loop_history_capped_to_last_8():
+    """history 超过 8 条时，只注入最近 8 条，防长上下文累积。"""
+    fake = FakeChat([
+        {"content": '{"intent":"query","sub_tasks":[],"needs_doc":false}', "tool_calls": []},
+        {"content": "Thought: x\nFinal Answer: ok。", "tool_calls": []},
+    ])
+    ctx = _ctx()
+    history = [{"role": "user", "content": f"msg{i}"} for i in range(12)]
+    list(run_agent(ctx, "继续", chat_fn=fake, cfg={"base_url": "x", "api_key": "y"},
+                   history=history))
+    exec_messages = fake.calls[1]["messages"]
+    injected = [m["content"] for m in exec_messages
+                if m["role"] == "user" and m["content"].startswith("msg")]
+    assert len(injected) == 8
+    assert injected[0] == "msg4"   # 12 条历史，注入最近 8 条 = msg4..msg11
+
+
+def test_loop_mutate_intent_injects_tool_directive():
+    """mutate 意图时，Executor system prompt 应注入「必须调工具」的强指令。"""
+    fake = FakeChat([
+        {"content": '{"intent":"mutate","sub_tasks":[],"needs_doc":false}', "tool_calls": []},
+        {"content": 'Thought: 加节点\nAction: add_node\nArguments: {"description":"LightGCN"}',
+         "tool_calls": []},
+        {"content": "Thought: ok\nFinal Answer: 已生成 LightGCN 节点建议。", "tool_calls": []},
+    ])
+    ctx = _ctx()
+    list(run_agent(ctx, "加一个 LightGCN 节点", chat_fn=fake,
+                   cfg={"base_url": "x", "api_key": "y"}))
+    exec_sys = fake.calls[1]["messages"][0]["content"]
+    assert "强制要求" in exec_sys
+    assert "add_node" in exec_sys
+
+
 def test_loop_chat_short_circuit_no_react():
     """chat intent → 单步直答,不进 ReAct(无 tool_call 事件)。"""
     fake = FakeChat([
@@ -158,6 +191,23 @@ def test_loop_chat_short_circuit_no_react():
     assert "学算法" in full
     # Executor (chat direct) called once; total calls = Planner(1) + chat direct(1) = 2
     assert len(fake.calls) == 2
+
+
+def test_loop_chat_direct_streams_when_available():
+    """chat 短路在 chat_fn 支持 stream 时应走真流式(逐 token delta)，不回退整段 chunk。"""
+    fake = FakeChat([
+        {"content": '{"intent":"chat","sub_tasks":[],"needs_doc":false}', "tool_calls": []},
+        {"content": "你好呀", "tool_calls": []},
+    ])
+    ctx = _ctx()
+    events = list(run_agent(ctx, "你好", chat_fn=fake, cfg={"base_url": "x", "api_key": "y"}))
+    deltas = [e.get("content", "") for e in events if e["type"] == "delta"]
+    assert "".join(deltas) == "你好呀"
+    # 流式逐 token：3 个中文字符 → 3 个 delta
+    assert len([d for d in deltas if d]) == 3
+    # 只调 2 次：Planner + chat direct(stream=True)，无第二次非流式回退
+    assert len(fake.calls) == 2
+    assert fake.calls[1]["stream"] is True
 
 
 def test_loop_reflect_ok_accepts_draft():
@@ -322,3 +372,38 @@ def test_loop_planner_doc_type_passes_to_writer():
     doc_cards = [e for e in events if e["type"] == "doc_card"]
     assert doc_cards
     assert doc_cards[0]["doc_type"] == "weekly"   # 来自 Planner，非关键词判断
+
+
+# ─────────────── P0: Writer 素材来自 observations_log（原生路径修复）───────────────
+
+def test_loop_writer_materials_from_observations_in_native_path(monkeypatch):
+    """原生 function calling 路径下，Writer 素材必须来自工具结果（observations_log），
+    而非从 messages 里反推 role=user 的 "Observation" 文本——旧实现导致原生路径 materials 恒为空。"""
+    from agent import protocol
+    monkeypatch.setattr(protocol, "detect_native_support", lambda cfg: True)
+
+    native_tc = [{"id": "call_1", "type": "function",
+                  "function": {"name": "get_progress", "arguments": "{}"}}]
+    responses = [
+        {"content": '{"intent":"produce","sub_tasks":[],"needs_doc":true,"doc_type":"note"}',
+         "tool_calls": []},
+        {"content": "", "tool_calls": native_tc},          # Executor：原生工具调用
+        {"content": "Thought: ok\nFinal Answer: 整理好了。", "tool_calls": []},  # final
+        {"content": '{"ok": true, "gap": ""}', "tool_calls": []},               # Reflect
+        {"content": "<title>笔记</title><p>内容</p>", "tool_calls": []},        # Writer
+    ]
+    import copy
+    snapshots: list[list[dict]] = []
+    def capturing_chat(cfg, messages, tools=None, stream=False, response_format=None):
+        snapshots.append(copy.deepcopy(messages))
+        if responses:
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        return {"content": "", "tool_calls": []}
+
+    ctx = _ctx(graph={"nodes": [], "overview": {"overall_pct": 45, "mastered_points": 1, "total_points": 3}})
+    events = list(run_agent(ctx, "整理个笔记", chat_fn=capturing_chat,
+                            cfg={"base_url": "x", "api_key": "y"}))
+    assert any(e["type"] == "doc_card" for e in events)
+    # 最后一个调用是 Writer：system prompt 应含工具观察结果（整体掌握度 45%）
+    writer_sys = snapshots[-1][0]["content"]
+    assert "45%" in writer_sys

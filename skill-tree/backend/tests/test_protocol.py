@@ -112,39 +112,26 @@ def test_chat_with_tools_sends_response_format(monkeypatch):
     assert "ok" in res["content"]
 
 
-def test_detect_json_mode_caches_result(monkeypatch):
-    """JSON mode 探测结果按 base_url+model 缓存，只探一次。"""
+def test_detect_json_mode_from_preset(monkeypatch):
+    """json_mode 由 preset 决定（无运行时探测）。provider 显式 False → 返回 False。"""
     from agent import protocol
-    protocol._reset_capability_cache()
-    # 恢复真实探测逻辑（conftest 默认 patch 成返回 False）
     monkeypatch.setattr(protocol, "detect_json_mode", protocol._real_detect_json_mode)
-    calls = {"n": 0}
-
-    def fake_urlopen(req, timeout=None):
-        calls["n"] += 1
-        class R:
-            def read(self): return b'{"choices":[{"message":{"content":"{\\"ok\\":true}","tool_calls":[]}}]}'
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-        return R()
-    monkeypatch.setattr("agent.protocol.urllib.request.urlopen", fake_urlopen)
-    cfg = {"base_url": "http://x/v1", "api_key": "k", "model": "m"}
-
-    assert protocol.detect_json_mode(cfg) is True
-    assert protocol.detect_json_mode(cfg) is True   # 缓存命中
-    assert calls["n"] == 1   # 只探了一次
+    cfg = {"provider": "moonshot", "base_url": "http://x/v1", "api_key": "k", "model": "m"}
+    assert protocol.detect_json_mode(cfg) is False
 
 
-def test_detect_native_support_returns_false_on_error(monkeypatch):
-    """探测请求失败时，detect_native_support 返回 False（走指令式回退）。"""
+def test_detect_json_mode_explicit_cfg_wins(monkeypatch):
+    """cfg 显式带 json_mode 时优先于 preset。"""
     from agent import protocol
-    protocol._reset_capability_cache()
-    # 恢复真实探测逻辑
+    monkeypatch.setattr(protocol, "detect_json_mode", protocol._real_detect_json_mode)
+    cfg = {"provider": "moonshot", "base_url": "http://x/v1", "api_key": "k",
+           "model": "m", "json_mode": True}
+    assert protocol.detect_json_mode(cfg) is True
+
+
+def test_detect_native_support_defaults_true(monkeypatch):
+    """OpenAI 兼容供应商默认支持原生 function calling，不再发探测请求。"""
+    from agent import protocol
     monkeypatch.setattr(protocol, "detect_native_support", protocol._real_detect_native_support)
-
-    def fake_urlopen(req, timeout=None):
-        raise RuntimeError("404 tools not supported")
-    monkeypatch.setattr("agent.protocol.urllib.request.urlopen", fake_urlopen)
     cfg = {"base_url": "http://x/v1", "api_key": "k", "model": "m"}
-
-    assert protocol.detect_native_support(cfg) is False
+    assert protocol.detect_native_support(cfg) is True

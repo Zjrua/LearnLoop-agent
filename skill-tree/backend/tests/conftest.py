@@ -14,7 +14,6 @@ def _force_react_path(monkeypatch):
     from agent import protocol
     monkeypatch.setattr(protocol, "detect_native_support", lambda cfg: False)
     monkeypatch.setattr(protocol, "detect_json_mode", lambda cfg: False)
-    protocol._reset_capability_cache()
     # 同步清 embedding 探测缓存，避免测试间残留
     from rag import indexer
     indexer._reset_embed_support_cache()

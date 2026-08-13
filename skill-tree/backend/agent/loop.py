@@ -1,4 +1,4 @@
-"""agent/loop.py — Agent 主控：Planner → Executor(ReAct) → Writer。
+"""agent/loop.py — Agent 主控：意图分类 → Executor(ReAct) → Writer。
 
 run_agent 是生成器，yield SSE 事件 dict。上层（FastAPI）序列化成 text/event-stream。
 注入点：chat_fn（可桩）、cfg、ctx；便于测试。
@@ -80,7 +80,7 @@ def run_agent(ctx: Context, user_input: str, chat_fn=_default_chat,
     tools = TOOLS_EXECUTOR
     graph_summary = _graph_summary(ctx.graph)
 
-    # ── 1. Planner 意图分流 ──
+    # ── 1. 意图分类（chat/query/mutate/produce 四类）──
     sys_p = render_planner(progress_summary=graph_summary, user_input=user_input)
     json_fmt = _json_fmt(cfg)   # 探测 JSON mode（支持才传，否则 None 走 _safe_intent 容错）
     try:
@@ -101,6 +101,13 @@ def run_agent(ctx: Context, user_input: str, chat_fn=_default_chat,
 
     # ── 2. Executor（chat 短路；其余走 ReAct 或原生 function calling）──
     sys_e = render_executor(tools_text=tool_schema_text(tools), graph_summary=graph_summary)
+    # mutate 意图：实测 2/2 用例模型只给文字建议、不调 add_node/add_tasks（核心写链路失效）。
+    # 显式注入强指令，把「修改」从「给建议」掰回「必须调工具产可确认的 node_proposal 卡片」。
+    if intent.get("intent") == "mutate":
+        sys_e = sys_e + (
+            "\n\n【本轮强制要求】用户意图是修改技能树。你必须调用工具（add_node / add_tasks / toggle_task）"
+            "生成可确认的建议卡片（node_proposal），不要只用文字描述该怎么改。"
+        )
     # 引用预处理：解析用户消息里的 #/@/$ 并注入上下文
     refs_text = ""
     has_dir_ref = False   # 是否有 $方向 引用（需聚焦）
@@ -122,7 +129,8 @@ def run_agent(ctx: Context, user_input: str, chat_fn=_default_chat,
                      f"若需查该方向详情，调用 get_direction 工具。")
     sys_e = inject_refs(sys_e, refs_text)
     messages = [{"role": "system", "content": sys_e}]
-    for m in (history or []):
+    # 只注入最近 8 条历史（前端已 slice(-12)，此处再收一层防长上下文累积触发供应商 400）
+    for m in (history or [])[-8:]:
         if m.get("role") in ("user", "assistant") and m.get("content"):
             messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": user_input})
@@ -260,7 +268,8 @@ def run_agent(ctx: Context, user_input: str, chat_fn=_default_chat,
     # ── 3. Writer（条件触发）──
     if intent.get("needs_doc"):
         doc_type = intent.get("doc_type")
-        yield from _run_writer(ctx, user_input, messages, chat_fn, cfg, doc_type=doc_type)
+        yield from _run_writer(ctx, user_input, messages, chat_fn, cfg,
+                               doc_type=doc_type, observations_log=observations_log)
 
     yield {"type": "done"}
 
@@ -281,19 +290,44 @@ def _find_tool_call_id(raw_tool_calls: list, action: str) -> str:
 
 
 def _chat_direct(user_input, history, chat_fn, cfg) -> Iterator[dict]:
-    """chat 意图:一次 LLM 直答,拿全文本后 chunk 成 delta(统一流式口径)。"""
+    """chat 意图:单步直答。无 Reflexion 依赖，直接流式逐 token 返回；
+    流式失败/无产出时回退为「拿全文本再 chunk」。"""
     sys_c = render_chat_direct(_history_summary(history))
     messages = [{"role": "system", "content": sys_c}]
-    for m in history:
+    # 摘要已覆盖最近 6 条，messages 只补最近 8 条原文，避免全量历史冗余膨胀
+    for m in history[-8:]:
         if m.get("role") in ("user", "assistant") and m.get("content"):
             messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": user_input})
+
+    # 优先真流式：stream=True 时 chat_fn 返回 delta 迭代器（首 token 延迟低）
     try:
-        res = chat_fn(cfg, messages, tools=None)
-        answer = res.get("content", "") or "（无回复）"
+        res = chat_fn(cfg, messages, tools=None, stream=True)
+    except Exception:
+        res = None
+
+    if res is not None and not isinstance(res, dict):
+        streamed = False
+        try:
+            for ev in res:
+                if isinstance(ev, dict) and ev.get("type") == "delta":
+                    streamed = True
+                    yield ev
+        except Exception as e:
+            # 已产出部分内容无法撤回，标记中断
+            yield {"type": "delta", "content": f"（流式中断: {e}）"}
+            streamed = True
+        if streamed:
+            yield {"type": "final_done"}
+            return
+
+    # 回退：非流式整段返回，再 chunk
+    try:
+        res2 = chat_fn(cfg, messages, tools=None)
+        answer = res2.get("content", "") if isinstance(res2, dict) else ""
     except Exception as e:
         answer = f"（生成失败: {e}）"
-    yield from _emit_text_as_delta(answer)
+    yield from _emit_text_as_delta(answer or "（无回复）")
     yield {"type": "final_done"}
 
 
@@ -339,7 +373,7 @@ def _history_summary(history: list[dict]) -> str:
 
 
 def _pick_doc_type(request: str) -> str:
-    """按用户措辞判定文档类型（Planner 未给 doc_type 时的兜底）。"""
+    """按用户措辞判定文档类型（意图分类未给 doc_type 时的兜底）。"""
     r = request
     if any(k in r for k in ("复习", "自测", "review")):
         return "review"
@@ -349,12 +383,19 @@ def _pick_doc_type(request: str) -> str:
 
 
 def _run_writer(ctx, user_input, executor_messages, chat_fn, cfg,
-                doc_type: str | None = None) -> Iterator[dict]:
+                doc_type: str | None = None,
+                observations_log: list[str] | None = None) -> Iterator[dict]:
     from agent.prompts import render_writer
     if not doc_type:
         doc_type = _pick_doc_type(user_input)
-    materials = "\n".join(m.get("content", "") for m in executor_messages
-                          if m.get("role") == "user" and "Observation" in m.get("content", ""))
+    # 素材来自工具执行结果：observations_log 在原生 function calling 与 ReAct 两条路径都会累积。
+    # 旧实现从 messages 里反推 role=user 的 "Observation" 文本，但原生路径下工具结果用 role=tool
+    # 回填、不含 "Observation" 字样，导致 produce 场景（整理笔记/复习卡/周报）素材恒为空、Writer 空手编造。
+    if observations_log is not None:
+        materials = "\n".join(observations_log)
+    else:
+        materials = "\n".join(m.get("content", "") for m in executor_messages
+                              if m.get("role") == "user" and "Observation" in m.get("content", ""))
     sys_w = render_writer(materials=materials[:2000], request=user_input, doc_type=doc_type)
     try:
         res = chat_fn(cfg, [{"role": "system", "content": sys_w},

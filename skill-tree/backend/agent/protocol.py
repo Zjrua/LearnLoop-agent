@@ -72,67 +72,33 @@ import urllib.request
 import urllib.error
 
 
-# ── 供应商能力探测（按 base_url+model 缓存，只探一次）──
-_CAPABILITY_CACHE: dict[str, bool] = {}
-
-
-def _cap_key(cfg: dict, capability: str) -> str:
-    """缓存键：base_url + model + 能力名。"""
-    return f"{cfg.get('base_url','')}|{cfg.get('model','')}|{capability}"
-
-
-def _probe_and_cache(cfg: dict, capability: str, probe_fn) -> bool:
-    """通用探测：probe_fn(cfg) -> bool。失败记 False，缓存，不再探。"""
-    key = _cap_key(cfg, capability)
-    if key in _CAPABILITY_CACHE:
-        return _CAPABILITY_CACHE[key]
-    try:
-        ok = bool(probe_fn(cfg))
-    except Exception:
-        ok = False
-    _CAPABILITY_CACHE[key] = ok
-    return ok
-
-
-def _reset_capability_cache() -> None:
-    """测试用：清空能力缓存。"""
-    _CAPABILITY_CACHE.clear()
+# ── 供应商能力判定（无运行时探测）──
+# 所有预置供应商都是 OpenAI 兼容接口，原生 function calling 默认可用；
+# 少数差异（如 Moonshot 不支持 json_mode）由 ai.PROVIDER_PRESETS 的 json_mode 字段表达。
+# 不再发「诱导性探测请求」——那会消耗一次真实 LLM 调用，且 5 家供应商本就兼容，
+# 探测属于重复造轮子。原生路径调用失败时由 run_agent 的 try/except 自动降级 ReAct 文本。
 
 
 def detect_native_support(cfg: dict) -> bool:
-    """探测供应商是否支持原生 function calling（tools 字段 + tool_calls 响应）。
-    发一个诱导性请求（带 tools + 让模型调 get_progress），看是否返回 tool_calls。
-    失败/不支持 → False（走指令式 ReAct 回退）。"""
-    def probe(c):
-        from agent.tools import TOOLS_EXECUTOR
-        # 只用最小工具集探测，节省 token
-        probe_tools = [TOOLS_EXECUTOR[0]]  # get_progress
-        msg = chat_with_tools(
-            c,
-            [{"role": "user", "content": "请调用 get_progress 工具查询进度。"}],
-            tools=probe_tools,
-        )
-        return bool(normalize_tool_calls(msg.get("tool_calls") or []))
-    return _probe_and_cache(cfg, "native_tools", probe)
+    """OpenAI 兼容供应商默认支持原生 function calling。
+    自定义供应商若实际不支持，run_agent 在原生调用抛错时会自动降级 ReAct 文本路径。"""
+    return True
 
 
 def detect_json_mode(cfg: dict) -> bool:
-    """探测供应商是否支持 response_format: {type: json_object}。
-    发一个带 JSON mode 的最简请求，能返回即支持。"""
-    def probe(c):
-        res = chat_with_tools(
-            c,
-            [{"role": "system", "content": "输出 JSON。"},
-             {"role": "user", "content": '输出 {"ok": true}'}],
-            tools=None,
-            response_format={"type": "json_object"},
-        )
-        # 能正常返回内容（不报错）即视为支持
-        return bool(res.get("content"))
-    return _probe_and_cache(cfg, "json_mode", probe)
+    """JSON mode 由供应商决定，直接查 preset（不探测）。
+    cfg 显式带 json_mode 时优先；否则按 provider id 查 PROVIDER_PRESETS；默认 True（容错解析兜底）。"""
+    if "json_mode" in cfg:
+        return bool(cfg["json_mode"])
+    from ai import PROVIDER_PRESETS
+    pid = cfg.get("provider", "")
+    for p in PROVIDER_PRESETS:
+        if p["id"] == pid:
+            return bool(p.get("json_mode", True))
+    return True
 
 
-# 保留原始实现引用，供测试在 conftest patch 后恢复真实探测逻辑
+# 真实实现引用，供测试在 conftest patch 后恢复（conftest 默认把两个 detect 都 patch 成 False）
 _real_detect_json_mode = detect_json_mode
 _real_detect_native_support = detect_native_support
 

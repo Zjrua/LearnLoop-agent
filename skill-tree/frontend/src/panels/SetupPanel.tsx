@@ -63,7 +63,7 @@ export function SetupPanel({ onDone }: Props) {
     setTesting(false)
   }
   const fetchModels = async () => {
-    if (!cfg.base_url || !cfg.api_key) { setModelErr('请先填 Base URL 和 API Key'); return }
+    if (!cfg.base_url || (!cfg.api_key && !cfg.has_api_key)) { setModelErr('请先填 Base URL 和 API Key'); return }
     setFetchingModels(true); setModelErr('')
     try {
       const r = await api.listModels(cfg)
@@ -132,7 +132,8 @@ export function SetupPanel({ onDone }: Props) {
           <label className="field-label">Base URL</label>
           <input className="field" value={cfg.base_url} onChange={e => setCfg({ ...cfg, base_url: e.target.value })} placeholder="https://api.deepseek.com/v1" />
           <label className="field-label">API Key</label>
-          <input className="field" type="password" value={cfg.api_key} onChange={e => setCfg({ ...cfg, api_key: e.target.value })} placeholder="sk-..." />
+          <input className="field" type="password" value={cfg.api_key} onChange={e => setCfg({ ...cfg, api_key: e.target.value })} placeholder={cfg.has_api_key && !cfg.api_key ? '已保存（留空保持不变）' : 'sk-...'} />
+          {cfg.has_api_key && !cfg.api_key && <div className="setup-hint">已保存 API Key，留空则保持原有值不变。</div>}
           <label className="field-label">模型 {models.length > 0 && <span className="model-count">（{models.length} 个可选，也可手输）</span>}</label>
           <input className="field" value={cfg.model} onChange={e => setCfg({ ...cfg, model: e.target.value })} placeholder="deepseek-chat / glm-5.2 / kimi-k2.7-code…" list="modellist" />
           <datalist id="modellist">{models.map(m => <option key={m} value={m} />)}</datalist>
@@ -141,7 +142,7 @@ export function SetupPanel({ onDone }: Props) {
           </button>
           {modelErr && <div className="test-msg fail" style={{ marginTop: 10 }}>{modelErr}</div>}
           <div className="inline-form" style={{ marginTop: 16 }}>
-            <button className="btn" onClick={testCfg} disabled={testing || !cfg.api_key}>{testing ? '测试中…' : '🔍 测连通'}</button>
+            <button className="btn" onClick={testCfg} disabled={testing || (!cfg.api_key && !cfg.has_api_key)}>{testing ? '测试中…' : '🔍 测连通'}</button>
             <button className="btn primary" onClick={saveCfg}>保存并下一步 →</button>
           </div>
           {testMsg && <div className={`test-msg ${testMsg.ok ? 'ok' : 'fail'}`}>{testMsg.ok ? '✓ ' : '✗ '}{testMsg.msg}</div>}

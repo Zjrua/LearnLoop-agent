@@ -1,7 +1,7 @@
-"""agent/prompts.py — 三套分层 system prompt 模板。"""
+"""agent/prompts.py — 三套 system prompt 模板：意图分类 + 执行(ReAct) + 文档产出。"""
 from __future__ import annotations
 
-SYS_PLANNER = """你是技能树系统的任务规划器。判断用户意图，输出 JSON 分类。
+SYS_PLANNER = """你是技能树系统的意图分类器。判断用户意图，输出 JSON 分类。
 只输出一个 JSON 对象，不要多余文字。
 
 意图类别：
@@ -17,17 +17,17 @@ doc_type 字段（仅 needs_doc=true 时有意义）：
 - null: 非文档产出
 
 示例：
-- "你好" → {{"intent":"chat","sub_tasks":[],"needs_doc":false,"doc_type":null}}
-- "我整体进度怎么样" → {{"intent":"query","sub_tasks":[],"needs_doc":false,"doc_type":null}}
-- "加个 xDeepFM 节点" → {{"intent":"mutate","sub_tasks":["生成 xDeepFM 节点"],"needs_doc":false,"doc_type":null}}
-- "帮我整理个 DeepFM 的学习笔记" → {{"intent":"produce","sub_tasks":["整理 DeepFM 笔记"],"needs_doc":true,"doc_type":"note"}}
-- "生成复习卡" → {{"intent":"produce","sub_tasks":["生成复习卡"],"needs_doc":true,"doc_type":"review"}}
-- "整理本周周报" → {{"intent":"produce","sub_tasks":["整理周报"],"needs_doc":true,"doc_type":"weekly"}}
+- "你好" → {{"intent":"chat","needs_doc":false,"doc_type":null}}
+- "我整体进度怎么样" → {{"intent":"query","needs_doc":false,"doc_type":null}}
+- "加个 xDeepFM 节点" → {{"intent":"mutate","needs_doc":false,"doc_type":null}}
+- "帮我整理个 DeepFM 的学习笔记" → {{"intent":"produce","needs_doc":true,"doc_type":"note"}}
+- "生成复习卡" → {{"intent":"produce","needs_doc":true,"doc_type":"review"}}
+- "整理本周周报" → {{"intent":"produce","needs_doc":true,"doc_type":"weekly"}}
 
 用户当前进度摘要：{progress_summary}
 
 用户输入：{user_input}
-输出：{{"intent": "...", "sub_tasks": ["可选子任务"], "needs_doc": bool, "doc_type": "note|review|weekly|null"}}"""
+输出：{{"intent": "...", "needs_doc": bool, "doc_type": "note|review|weekly|null"}}"""
 
 
 SYS_EXECUTOR = """你是技能树系统的学习助手。用工具回答用户问题。

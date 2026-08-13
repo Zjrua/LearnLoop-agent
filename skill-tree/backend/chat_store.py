@@ -1,4 +1,4 @@
-"""chat_store.py — 多会话对话存储（JSON 文件，每用户独立）。
+"""chat_store.py — 多会话对话存储（JSON 文件，单用户本地存储）。
 
 数据模型: {sessions: [Session], current_session_id: str|null}
 Session: {id, title, created_at, updated_at, messages: [Msg]}
