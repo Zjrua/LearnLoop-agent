@@ -88,8 +88,9 @@ pip install numpy
 
 - **Agent loop 评估**：13 条黄金用例覆盖 chat/query/mutate/produce 四类意图，跑通即回归
 - **RAG 召回评估**：15 条查询集 + Top-k 敏感性扫描 + 分数阈值实验
-- **复现**：`cd skill-tree/backend && python ../../eval/run_eval.py`，原始数据落 `eval/results/`
-- 完整结果见 [`eval/RESULTS.md`](eval/RESULTS.md)
+- **统计口径**：`--repeats k` 多次重复出双口径报告——pass@k（能力，无偏估计）+ pass^k（可靠性，直接频率）+ Wilson 95% CI；judge 验证脚本测 Reflexion 校验器的混淆矩阵 / TPR / TNR / κ（纯标准库 `eval/stats.py`，方法论见[评测指南第九章](https://my.feishu.cn/docx/BDfMdHc11oltMDxr0D6cSYzOnYf)）
+- **复现**：`cd skill-tree/backend && python ../../eval/run_eval.py --repeats 5`，原始数据落 `eval/results/`
+- 完整结果见 [`eval/RESULTS.md`](eval/RESULTS.md)（k=5 实测：宏 pass@5=1.000 / pass^5=0.615，judge κ=0.60）
 
 ## AI Agent 详解
 
