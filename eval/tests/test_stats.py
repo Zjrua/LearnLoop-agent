@@ -112,3 +112,32 @@ class TestPassAtK:
         for bad in [(0, 0, 1), (10, -1, 1), (10, 11, 1), (10, 5, 0)]:
             with pytest.raises(ValueError):
                 stats.pass_pow_k(*bad)
+
+
+# ══════════════════════════════════════════════════════════════
+# 任务3:McNemar 精确检验
+# ══════════════════════════════════════════════════════════════
+class TestMcNemarExact:
+    """McNemar 精确二项检验:配对模型 A/B 的显著性(只看不一致格 b/c)。"""
+
+    def test_no_discordant_pairs(self):
+        # b=c=0 → 无任何不一致,无证据拒绝
+        assert stats.mcnemar_exact_p(0, 0) == 1.0
+
+    def test_symmetric_discordant(self):
+        # b=c=5 → 完全对称,p 应接近 1
+        assert stats.mcnemar_exact_p(5, 5) > 0.9
+
+    def test_asymmetric_reference_value(self):
+        # b=1,c=10 → 与 scipy binomtest(1,11,0.5) 双侧一致
+        assert stats.mcnemar_exact_p(1, 10) == pytest.approx(0.01171875, abs=1e-6)
+
+    def test_extreme_asymmetry(self):
+        # b=0,c=12 → 极端不一致,强显著
+        assert stats.mcnemar_exact_p(0, 12) < 0.01
+
+    def test_invalid_args(self):
+        with pytest.raises(ValueError):
+            stats.mcnemar_exact_p(-1, 5)
+        with pytest.raises(ValueError):
+            stats.mcnemar_exact_p(5, -1)

@@ -10,6 +10,7 @@ Cohen's κ 与 judge 诊断指标、bootstrap percentile 置信区间。
 from __future__ import annotations
 
 import math
+from math import comb
 
 
 # ── Wilson score 置信区间 ──
@@ -82,3 +83,25 @@ def pass_pow_k(n: int, c: int, k: int) -> float:
     """
     _validate_counts(c, n, k)
     return (c / n) ** k
+
+
+# ── McNemar 精确检验 ──
+def mcnemar_exact_p(b: int, c: int) -> float:
+    """McNemar 精确二项检验的双侧 p 值。
+
+    配对场景(同一批用例跑模型 A/B),2x2 列联表中只有不一致格
+    b(A 过 B 挂)与 c(A 挂 B 过)携带 A/B 差异信息。
+    零假设下 b ~ Binomial(b+c, 0.5),双侧精确 p:
+        p = min(1, 2 * P(X <= min(b, c))),  X ~ Binomial(b+c, 0.5)
+    """
+    if b < 0:
+        raise ValueError(f"b 必须 >= 0,收到 b={b}")
+    if c < 0:
+        raise ValueError(f"c 必须 >= 0,收到 c={c}")
+
+    n = b + c
+    if n == 0:
+        # 没有不一致样本 → 无证据拒绝
+        return 1.0
+    tail = sum(comb(n, i) * 0.5**n for i in range(min(b, c) + 1))
+    return min(1.0, 2.0 * tail)
