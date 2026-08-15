@@ -198,3 +198,54 @@ class TestJudgeMetrics:
     def test_cohens_kappa_rejects_empty(self):
         with pytest.raises(ValueError):
             stats.cohens_kappa(0, 0, 0, 0)
+
+
+# ══════════════════════════════════════════════════════════════
+# 任务5:bootstrap percentile 置信区间
+# ══════════════════════════════════════════════════════════════
+class TestBootstrapCI:
+    """bootstrap:对任意统计量做重采样 percentile 区间,不依赖分布假设。"""
+
+    def _gauss_samples(self, n=200):
+        rng = random.Random(3)
+        return [rng.gauss(10, 2) for _ in range(n)]
+
+    def test_mean_ci_brackets_truth(self):
+        samples = self._gauss_samples()
+        lo, hi = stats.bootstrap_ci(samples, stat="mean", B=1000, seed=42)
+        point = sum(samples) / len(samples)
+        assert lo < point < hi  # 区间包住点估计
+        assert lo < 10.5 and hi > 9.5  # 也应接近真值 10
+        assert (hi - lo) < (max(samples) - min(samples))  # 宽度 < 样本极差
+
+    def test_outlier_sample_brackets_statistic(self):
+        # 均值 19.166…(被 100 拉高),区间应包含该点估计
+        lo, hi = stats.bootstrap_ci([1, 2, 3, 4, 5, 100], stat="mean", B=500, seed=1)
+        assert lo <= 115 / 6 <= hi
+
+    def test_callable_stat(self):
+        samples = self._gauss_samples(50)
+        point = sum(samples) / len(samples)
+        lo, hi = stats.bootstrap_ci(samples, stat=lambda x: sum(x) / len(x),
+                                    B=200, seed=9)
+        assert lo < point < hi
+
+    def test_reproducible_same_seed(self):
+        samples = self._gauss_samples(50)
+        r1 = stats.bootstrap_ci(samples, stat="median", B=200, seed=7)
+        r2 = stats.bootstrap_ci(samples, stat="median", B=200, seed=7)
+        assert r1 == r2
+
+    def test_median_stat(self):
+        samples = self._gauss_samples(100)
+        point = sorted(samples)[len(samples) // 2]
+        lo, hi = stats.bootstrap_ci(samples, stat="median", B=500, seed=2)
+        assert lo < point < hi
+
+    def test_invalid_args(self):
+        with pytest.raises(ValueError):
+            stats.bootstrap_ci([], stat="mean", B=100)          # 空 samples
+        with pytest.raises(ValueError):
+            stats.bootstrap_ci([1, 2, 3], stat="mean", B=9)     # B < 10
+        with pytest.raises(ValueError):
+            stats.bootstrap_ci([1, 2, 3], stat="variance", B=100)  # 未知 stat 名

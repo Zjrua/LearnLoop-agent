@@ -10,6 +10,8 @@ Cohen's κ 与 judge 诊断指标、bootstrap percentile 置信区间。
 from __future__ import annotations
 
 import math
+import random
+from collections.abc import Callable
 from math import comb
 
 
@@ -149,3 +151,49 @@ def judge_metrics(tp: int, fp: int, fn: int, tn: int) -> dict:
         "kappa": cohens_kappa(tp, fp, fn, tn),
         "n": n,
     }
+
+
+# ── bootstrap percentile 置信区间 ──
+def bootstrap_ci(
+    samples: list[float],
+    stat: str | Callable[[list[float]], float] = "mean",
+    B: int = 1000,
+    alpha: float = 0.05,
+    seed: int | None = 0,
+) -> tuple[float, float]:
+    """bootstrap percentile 法置信区间。
+
+    对 samples 有放回重采样 B 次,每次计算统计量 stat,取经验分布的
+    alpha/2 与 1-alpha/2 分位作为区间端点。不依赖任何分布假设,
+    适用于延迟、token 数等形状任意的指标。
+
+    Args:
+        samples: 原始样本(非空)
+        stat: "mean" / "median" / 任意 list->float 可调用对象
+        B: 重采样次数(>= 10)
+        alpha: 显著性水平,默认 0.05 → 95% 区间
+        seed: 随机种子,None 表示不固定
+
+    Returns:
+        (lo, hi) percentile 置信区间
+    """
+    if not samples:
+        raise ValueError("samples 不能为空")
+    if B < 10:
+        raise ValueError(f"B 必须 >= 10,收到 B={B}")
+
+    if callable(stat):
+        stat_fn = stat
+    elif stat == "mean":
+        stat_fn = lambda x: sum(x) / len(x)  # noqa: E731
+    elif stat == "median":
+        stat_fn = lambda x: sorted(x)[len(x) // 2]  # noqa: E731
+    else:
+        raise ValueError(f"未知 stat:{stat!r}(支持 'mean'/'median'/callable)")
+
+    rng = random.Random(seed)
+    n = len(samples)
+    vals = sorted(stat_fn(rng.choices(samples, k=n)) for _ in range(B))
+    lo_idx = int((alpha / 2) * B)
+    hi_idx = min(B - 1, int((1 - alpha / 2) * B))
+    return vals[lo_idx], vals[hi_idx]
