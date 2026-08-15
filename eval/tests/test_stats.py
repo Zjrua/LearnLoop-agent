@@ -249,3 +249,47 @@ class TestBootstrapCI:
             stats.bootstrap_ci([1, 2, 3], stat="mean", B=9)     # B < 10
         with pytest.raises(ValueError):
             stats.bootstrap_ci([1, 2, 3], stat="variance", B=100)  # 未知 stat 名
+
+
+# ══════════════════════════════════════════════════════════════
+# 任务6:Clopper-Pearson 精确二项置信区间
+# ══════════════════════════════════════════════════════════════
+class TestClopperPearson:
+    """Clopper-Pearson:保证覆盖概率 >= 1-alpha 的保守精确区间。"""
+
+    def test_reference_value_11_of_13(self):
+        # statsmodels proportion_confint(11, 13, method='beta') 参考值
+        # (注:任务书参考值 hi=0.9846 与精确解不符——代入检验 P(X>=12)=0.9834≠0.975;
+        #  独立二分 + Beta(12,2) 分位数恒等式双重验证,真值为 0.9808,沿用任务4先例修正)
+        lo, hi = stats.clopper_pearson_ci(11, 13, 0.05)
+        assert lo == pytest.approx(0.5454, abs=1e-3)
+        assert hi == pytest.approx(0.9808, abs=1e-3)
+
+    def test_zero_success(self):
+        lo, hi = stats.clopper_pearson_ci(0, 13)
+        assert lo == 0.0
+        assert 0.0 < hi < 0.30
+
+    def test_all_success(self):
+        lo, hi = stats.clopper_pearson_ci(13, 13)
+        assert lo > 0.60
+        assert hi == 1.0
+
+    def test_conservative_vs_wilson(self):
+        # 保守性:同一数据下 CP 区间应包含 Wilson 区间
+        loC, hiC = stats.clopper_pearson_ci(11, 13)
+        loW, hiW = stats.wilson_ci(11, 13)
+        assert loC <= loW
+        assert hiC >= hiW
+
+    def test_invalid_args(self):
+        with pytest.raises(ValueError):
+            stats.clopper_pearson_ci(5, 0)      # n<=0
+        with pytest.raises(ValueError):
+            stats.clopper_pearson_ci(-1, 13)    # k<0
+        with pytest.raises(ValueError):
+            stats.clopper_pearson_ci(14, 13)    # k>n
+        with pytest.raises(ValueError):
+            stats.clopper_pearson_ci(11, 13, 0.0)   # alpha 不在 (0,1)
+        with pytest.raises(ValueError):
+            stats.clopper_pearson_ci(11, 13, 1.0)   # alpha 不在 (0,1)

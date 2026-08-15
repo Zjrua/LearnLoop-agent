@@ -197,3 +197,72 @@ def bootstrap_ci(
     lo_idx = int((alpha / 2) * B)
     hi_idx = min(B - 1, int((1 - alpha / 2) * B))
     return vals[lo_idx], vals[hi_idx]
+
+
+# ── Clopper-Pearson 精确二项置信区间 ──
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    """二项分布 CDF:P(X <= k),X ~ Binomial(n, p)。k<0 时约定为 0。"""
+    if k < 0:
+        return 0.0
+    return sum(comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k + 1))
+
+
+def _solve(
+    f: Callable[[float], float],
+    target: float,
+    lo: float = 0.0,
+    hi: float = 1.0,
+    iters: int = 100,
+) -> float:
+    """二分法解 f(x) = target(f 单调,不要求方向),返回最终区间中点。"""
+    f_lo = f(lo)
+    for _ in range(iters):
+        mid = (lo + hi) / 2
+        f_mid = f(mid)
+        if f_mid == target:
+            return mid
+        if (f_mid - target) * (f_lo - target) > 0:
+            lo, f_lo = mid, f_mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def clopper_pearson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
+    """Clopper-Pearson 精确二项置信区间。
+
+    通过求解二项分布尾概率方程构造:
+        lo: P(X >= k | p=lo) = alpha/2   (即 1 - CDF(k-1) = alpha/2)
+        hi: P(X <= k | p=hi) = alpha/2
+    等价于 Beta 分布分位数(BetaInverse),这里用 bisection 数值求解。
+
+    与 Wilson 的区别:CP 是精确法,覆盖概率保证 >= 1-alpha(保守,
+    实际覆盖常略超名义水平,区间偏宽);Wilson 基于正态近似 score,
+    区间更窄但覆盖概率只在平均意义下接近名义水平。报告需要"保险"
+    的下界(如评测通过率声明)时用 CP,日常比较用 Wilson。
+
+    Args:
+        k: 成功次数
+        n: 总试验次数
+        alpha: 显著性水平,须在 (0, 1),默认 0.05 → 95% 区间
+
+    Returns:
+        (lo, hi) 置信区间端点,始终落在 [0, 1] 内
+    """
+    if n <= 0:
+        raise ValueError(f"n 必须 > 0,收到 n={n}")
+    if k < 0:
+        raise ValueError(f"k 必须 >= 0,收到 k={k}")
+    if k > n:
+        raise ValueError(f"k 不能大于 n,收到 k={k}, n={n}")
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha 必须在 (0, 1),收到 alpha={alpha}")
+
+    tail = alpha / 2
+    if k == 0:
+        return 0.0, _solve(lambda p: _binom_cdf(0, n, p), tail)
+    if k == n:
+        return _solve(lambda p: 1.0 - _binom_cdf(n - 1, n, p), tail), 1.0
+    lo = _solve(lambda p: 1.0 - _binom_cdf(k - 1, n, p), tail)
+    hi = _solve(lambda p: _binom_cdf(k, n, p), tail)
+    return lo, hi
