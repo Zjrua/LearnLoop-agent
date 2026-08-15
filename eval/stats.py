@@ -105,3 +105,47 @@ def mcnemar_exact_p(b: int, c: int) -> float:
         return 1.0
     tail = sum(comb(n, i) * 0.5**n for i in range(min(b, c) + 1))
     return min(1.0, 2.0 * tail)
+
+
+# ── Cohen's κ + judge 诊断指标 ──
+def cohens_kappa(tp: int, fp: int, fn: int, tn: int) -> float:
+    """Cohen's κ:两评分者(judge vs 真值)一致性超出随机的部分。
+
+    κ = (po - pe) / (1 - pe)
+    po = 观察一致率 = (tp+tn)/n
+    pe = 随机期望一致率 = (行1边际×列1边际 + 行2边际×列2边际)/n²
+    κ=1 完美一致;κ=0 不优于随机;κ<0 比随机还差。
+    """
+    n = tp + fp + fn + tn
+    if n == 0:
+        raise ValueError("四格全为 0,无法计算 κ")
+    po = (tp + tn) / n
+    pe = ((tp + fp) * (tp + fn) + (fp + tn) * (fn + tn)) / (n * n)
+    if pe >= 1.0:
+        # 边际完全一致且 po=1 → 完美一致
+        return 1.0
+    return (po - pe) / (1.0 - pe)
+
+
+def judge_metrics(tp: int, fp: int, fn: int, tn: int) -> dict:
+    """LLM judge 的诊断四格指标(正类 = 有缺陷,judge 判 not-ok)。
+
+    tp: 缺陷被抓住  fp: 误报   fn: 漏检   tn: 正常放行
+
+    返回 dict:tpr/tnr/ppv/npv/accuracy/prevalence/kappa/ppv_defined/n。
+    除零时对应值为 None(ppv_defined=False);无样本时返回空 dict。
+    """
+    n = tp + fp + fn + tn
+    if n == 0:
+        return {}
+    return {
+        "tpr": tp / (tp + fn) if (tp + fn) > 0 else None,
+        "tnr": tn / (tn + fp) if (tn + fp) > 0 else None,
+        "ppv": tp / (tp + fp) if (tp + fp) > 0 else None,
+        "ppv_defined": (tp + fp) > 0,
+        "npv": tn / (tn + fn) if (tn + fn) > 0 else None,
+        "accuracy": (tp + tn) / n,
+        "prevalence": (tp + fn) / n,
+        "kappa": cohens_kappa(tp, fp, fn, tn),
+        "n": n,
+    }

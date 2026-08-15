@@ -141,3 +141,60 @@ class TestMcNemarExact:
             stats.mcnemar_exact_p(-1, 5)
         with pytest.raises(ValueError):
             stats.mcnemar_exact_p(5, -1)
+
+
+# ══════════════════════════════════════════════════════════════
+# 任务4:Cohen's κ + judge 诊断指标
+# ══════════════════════════════════════════════════════════════
+class TestCohensKappa:
+    """κ:超出随机一致性的部分,校正 accuracy 在不平衡数据上的虚高。"""
+
+    def test_perfect_agreement(self):
+        assert stats.cohens_kappa(90, 0, 0, 10) == pytest.approx(1.0)
+
+    def test_chance_agreement(self):
+        # 对角线均分 → 与随机一致无异,κ=0
+        assert stats.cohens_kappa(25, 25, 25, 25) == pytest.approx(0.0, abs=1e-9)
+
+    def test_worse_than_chance(self):
+        assert stats.cohens_kappa(0, 50, 50, 0) < 0
+
+    def test_reference_value(self):
+        # 手算:po=0.85;行/列边际 (40,60)x(35,65) → pe=5300/10000=0.53
+        # κ=(0.85-0.53)/(1-0.53)=0.32/0.47≈0.68085
+        # (注:任务书参考值 0.6907 源于 pe 误算为 0.515,1400+3900=5300 非 5150)
+        assert stats.cohens_kappa(30, 10, 5, 55) == pytest.approx(0.68085, abs=1e-3)
+
+
+class TestJudgeMetrics:
+    """judge 诊断四格:正类=有缺陷(judge 判 not-ok)。"""
+
+    def test_balanced_case(self):
+        m = stats.judge_metrics(45, 5, 15, 35)
+        assert m["tpr"] == pytest.approx(45 / 60)
+        assert m["tnr"] == pytest.approx(35 / 40)
+        assert m["ppv"] == pytest.approx(45 / 50)
+        assert m["npv"] == pytest.approx(35 / 50)
+        assert m["accuracy"] == pytest.approx(0.8)
+        assert m["prevalence"] == pytest.approx(0.6)
+        assert m["kappa"] > 0
+        assert m["n"] == 100
+        assert m["ppv_defined"] is True
+
+    def test_base_rate_fallacy(self):
+        # 永远 PASS 的 judge + 缺陷率 10%:accuracy 0.9 看着不错,
+        # 但 tpr=0、κ=0 暴露它毫无判别力;ppv 无定义(0/0)
+        m = stats.judge_metrics(0, 0, 10, 90)
+        assert m["accuracy"] == pytest.approx(0.9)
+        assert m["tpr"] == 0.0
+        assert m["kappa"] == pytest.approx(0.0, abs=1e-9)
+        assert m["ppv"] is None
+        assert m["ppv_defined"] is False
+
+    def test_all_zero_returns_empty_dict(self):
+        # 无样本 → 无任何可算指标,约定返回空 dict
+        assert stats.judge_metrics(0, 0, 0, 0) == {}
+
+    def test_cohens_kappa_rejects_empty(self):
+        with pytest.raises(ValueError):
+            stats.cohens_kappa(0, 0, 0, 0)
