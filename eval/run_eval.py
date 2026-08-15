@@ -19,11 +19,17 @@ eval/run_eval.py — Agent 实测脚本:跑黄金用例,统计量化指标。
 数据口径:所有数字来自真实 LLM 调用。config.local.json 含 api_key 不入库。
 """
 from __future__ import annotations
+import argparse
+import copy
 import json
 import sys
 import time
 import urllib.request
 from pathlib import Path
+
+# ── 统计模块(纯标准库,同目录) ──
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stats import pass_at_k as _pass_at_k, wilson_ci
 
 # ── 配置加载 ──
 EVAL_DIR = Path(__file__).resolve().parent
@@ -146,6 +152,44 @@ def summarize(events: list[dict]) -> dict:
     }
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """命令行参数。默认行为与旧版一致(repeats=1 全量跑)。"""
+    p = argparse.ArgumentParser(description="Agent 黄金用例实测脚本(支持多次重复)")
+    p.add_argument("--repeats", type=int, default=1,
+                   help="每条用例独立重复次数 k(k>=1);>1 时输出 pass@k/pass^k 双口径")
+    p.add_argument("--only", type=str, default=None,
+                   help="子串过滤:只跑问题含该子串的用例(冒烟用)")
+    p.add_argument("--out-prefix", type=str, default="eval",
+                   help="结果文件名前缀(默认 eval → eval_rep5_<ts>.json)")
+    args = p.parse_args(argv)
+    if args.repeats < 1:
+        p.error("--repeats 必须 >= 1")
+    return args
+
+
+def aggregate_repeats(runs: list[dict]) -> dict:
+    """把同一用例的 k 次运行聚合成双口径指标。
+
+    pass@k(能力口径) = P[k 次中至少 1 次成功] 的无偏估计(超几何连乘);
+    pass^k(可靠性口径) = k 次全部成功的频率,直接统计不做独立性假设外推。
+    runs 为空 → ValueError;ci95 为 successes/k 的 Wilson 95% 置信区间。
+    """
+    k = len(runs)
+    if k == 0:
+        raise ValueError("runs 不能为空")
+    c = sum(1 for r in runs if r["complete_ok"])
+    return {
+        "k": k,
+        "successes": c,
+        "pass_at_k": _pass_at_k(k, c, k),
+        # pass^k 直接统计全对频率(经验指示量),不用 (c/k)^k 外推——
+        # 同一用例的多次运行正相关,独立性假设下的 p̂^k 会系统性失真(指南 9.2)。
+        "pass_pow_k": 1.0 if c == k else 0.0,
+        "pass_at_1": c / k,
+        "ci95": wilson_ci(c, k),
+    }
+
+
 def main():
     # 复用 backend 的 _build_ctx:构建带真实图谱(layout+掌握度)的 Context。
     # DATA_ROOT 由 env 指向 skill-tree/data(含 recommendation.json/agent.json 等真实树)。
@@ -160,50 +204,85 @@ def main():
     ctx, _ = be_main._build_ctx()
     # 覆盖 ctx.cfg:让 add_node 等(ai.generate_node)用实测 chat 配置
     ctx.cfg = CHAT_CFG
+
+    args = parse_args()
+    REPEATS = args.repeats
+    # --only 子串过滤(冒烟用)
+    golden = [g for g in GOLDEN if (args.only is None or args.only in g[0])]
     print(f"[INFO] DATA_ROOT = {be_main.DATA_ROOT}")
     print(f"[INFO] 图谱节点数 = {len(ctx.graph.get('nodes', []))}, "
           f"整体掌握度 = {ctx.graph.get('overview', {}).get('overall_pct', 0)}%")
+    print(f"[INFO] repeats = {REPEATS}, 用例数 = {len(golden)}")
 
     recorder = CallRecorder(CHAT_CFG)
 
-    results = []
-    print(f"\n{'='*60}\n开始实测:共 {len(GOLDEN)} 条黄金用例\n{'='*60}\n")
-    for i, (q, exp_intent, exp_tools) in enumerate(GOLDEN, 1):
-        print(f"[{i}/{len(GOLDEN)}] {q}  (期望意图={exp_intent}, 期望工具={exp_tools})")
-        events, wall = run_one(q, ctx, recorder)
-        s = summarize(events)
-        # 判定
-        # 意图:从第一条 thinking 事件 "意图：X" 提取
-        intent_actual = None
-        for t in s["thinking"]:
-            if t.startswith("意图"):
-                intent_actual = t.split("：", 1)[-1].strip()
-                break
-        intent_ok = (intent_actual == exp_intent)
-        # 工具:期望工具集合与实际有交集(或期望为 None 时实际无工具)
-        if exp_tools is None:
-            tool_ok = (s["n_tool_calls"] == 0)
-        else:
-            tool_ok = bool(s["tools_used"] and set(s["tools_used"]) & exp_tools)
-        # 完成:无 error 且有 final
-        complete_ok = s["has_final"] and not s["has_error"]
+    # 【关键】图谱快照:mutate 用例会真实改图(add_node 写 DATA_ROOT 下的 JSON),
+    # 不恢复则 repeat>=2 的行为漂移(节点已存在→工具行为变化)。深拷贝隔离。
+    graph_snapshot = copy.deepcopy(ctx.graph)
 
-        results.append({
-            "q": q, "exp_intent": exp_intent, "intent_actual": intent_actual,
-            "intent_ok": intent_ok,
-            "exp_tools": sorted(exp_tools) if exp_tools else None,
-            "tools_used": s["tools_used"], "tool_ok": tool_ok,
-            "reflect_rerun": s["reflect_rerun"],
-            "complete_ok": complete_ok,
-            "wall_s": round(wall, 2),
-            "error": s["error"],
-        })
-        flag = "OK" if (intent_ok and tool_ok and complete_ok) else "XX"
-        print(f"    -> 意图={intent_actual}({'' if intent_ok else 'X'}) "
-              f"工具={s['tools_used'] or '-'}({'' if tool_ok else 'X'}) "
-              f"Reflex续跑={s['reflect_rerun']} 完成={complete_ok} {wall:.1f}s [{flag}]")
-        if s["error"]:
-            print(f"       ERROR: {s['error'][:120]}")
+    results = []          # 每个 run 一条(保留旧字段结构)
+    case_runs = {q: [] for q, _, _ in golden}   # 按用例聚合,用于双口径
+    print(f"\n{'='*60}\n开始实测:共 {len(golden)} 条黄金用例 × {REPEATS} 次重复\n{'='*60}\n")
+    run_idx = 0
+    n_total = len(golden) * REPEATS
+    # repeat-major:外层重复、内层用例,让环境漂移(限流/网络)均匀分摊到各用例
+    for rep in range(1, REPEATS + 1):
+        # 每轮开始前恢复图谱快照
+        ctx.graph = copy.deepcopy(graph_snapshot)
+        for i, (q, exp_intent, exp_tools) in enumerate(golden, 1):
+            run_idx += 1
+            print(f"[{run_idx}/{n_total}] (rep{rep}/{REPEATS}) {q}  "
+                  f"(期望意图={exp_intent}, 期望工具={exp_tools})")
+            # 单 run 异常:重试 1 次,仍失败记 complete_ok=False
+            events, wall = None, 0.0
+            last_err = ""
+            for attempt in (1, 2):
+                try:
+                    events, wall = run_one(q, ctx, recorder)
+                    break
+                except Exception as e:  # run_one 内部已兜底,这里防 recorder 层异常
+                    last_err = f"{type(e).__name__}: {e}"
+                    if attempt == 1:
+                        print(f"       [WARN] 运行异常,{5}s 后重试: {last_err[:120]}")
+                        time.sleep(5)
+            if events is None:
+                events = [{"type": "error", "content": f"run_failed: {last_err}"}]
+                wall = 0.0
+            s = summarize(events)
+            # 判定
+            # 意图:从第一条 thinking 事件 "意图：X" 提取
+            intent_actual = None
+            for t in s["thinking"]:
+                if t.startswith("意图"):
+                    intent_actual = t.split("：", 1)[-1].strip()
+                    break
+            intent_ok = (intent_actual == exp_intent)
+            # 工具:期望工具集合与实际有交集(或期望为 None 时实际无工具)
+            if exp_tools is None:
+                tool_ok = (s["n_tool_calls"] == 0)
+            else:
+                tool_ok = bool(s["tools_used"] and set(s["tools_used"]) & exp_tools)
+            # 完成:无 error 且有 final
+            complete_ok = s["has_final"] and not s["has_error"]
+
+            record = {
+                "q": q, "exp_intent": exp_intent, "intent_actual": intent_actual,
+                "intent_ok": intent_ok,
+                "exp_tools": sorted(exp_tools) if exp_tools else None,
+                "tools_used": s["tools_used"], "tool_ok": tool_ok,
+                "reflect_rerun": s["reflect_rerun"],
+                "complete_ok": complete_ok,
+                "wall_s": round(wall, 2),
+                "error": s["error"],
+            }
+            results.append(record)
+            case_runs[q].append(record)
+            flag = "OK" if (intent_ok and tool_ok and complete_ok) else "XX"
+            print(f"    -> 意图={intent_actual}({'' if intent_ok else 'X'}) "
+                  f"工具={s['tools_used'] or '-'}({'' if tool_ok else 'X'}) "
+                  f"Reflex续跑={s['reflect_rerun']} 完成={complete_ok} {wall:.1f}s [{flag}]")
+            if s["error"]:
+                print(f"       ERROR: {s['error'][:120]}")
 
     # ── 汇总统计 ──
     n = len(results)
@@ -225,6 +304,8 @@ def main():
 
     summary = {
         "n_cases": n,
+        "repeats": REPEATS,
+        "temperature": 0.5,
         "intent_accuracy": round(intent_acc, 4),
         "tool_call_success": round(tool_acc, 4),
         "task_complete_rate": round(complete_rate, 4),
@@ -240,19 +321,43 @@ def main():
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
+    # ── 双口径聚合(pass@k 能力 / pass^k 可靠性) ──
+    cases_agg = []
+    if REPEATS > 1:
+        for q, exp_intent, _ in golden:
+            agg = aggregate_repeats(case_runs[q])
+            i_agg = aggregate_repeats(
+                [{"complete_ok": r["intent_ok"]} for r in case_runs[q]])
+            cases_agg.append({"q": q, "exp_intent": exp_intent,
+                              "agg": agg, "intent_agg": i_agg})
+        summary["macro_pass_at_k"] = round(
+            sum(c["agg"]["pass_at_k"] for c in cases_agg) / len(cases_agg), 4)
+        summary["macro_pass_pow_k"] = round(
+            sum(c["agg"]["pass_pow_k"] for c in cases_agg) / len(cases_agg), 4)
+
     print(f"\n{'='*60}\n实测汇总 (model={summary['model']})\n{'='*60}")
     for k, v in summary.items():
         if k in ("model", "timestamp"):
             continue
         print(f"  {k:.<36} {v}")
+    if cases_agg:
+        print(f"\n── 双口径(pass@k=能力 / pass^k=可靠性, k={REPEATS}) ──")
+        for c in cases_agg:
+            a = c["agg"]
+            print(f"  {c['q'][:12]:.<14} {a['successes']}/{a['k']} "
+                  f"pass@{a['k']}={a['pass_at_k']:.3f} "
+                  f"pass^{a['k']}={a['pass_pow_k']:.3f} "
+                  f"CI95=[{a['ci95'][0]:.3f},{a['ci95'][1]:.3f}]")
 
     # 保存结果
     out_dir = EVAL_DIR / "results"
     out_dir.mkdir(exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
-    out_path = out_dir / f"eval_{ts}.json"
+    fname = f"{args.out_prefix}_{ts}.json" if REPEATS == 1 else \
+        f"{args.out_prefix}_rep{REPEATS}_{ts}.json"
+    out_path = out_dir / fname
     out_path.write_text(
-        json.dumps({"summary": summary, "cases": results},
+        json.dumps({"summary": summary, "cases": results, "cases_agg": cases_agg},
                    ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
