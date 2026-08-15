@@ -5,6 +5,7 @@
 """
 import random
 import sys
+from math import comb
 from pathlib import Path
 
 import pytest
@@ -62,3 +63,52 @@ class TestWilsonCI:
             stats.wilson_ci(-1, 13)    # k<0
         with pytest.raises(ValueError):
             stats.wilson_ci(14, 13)    # k>n
+
+
+# ══════════════════════════════════════════════════════════════
+# 任务2:pass@k 无偏估计器 + pass^k
+# ══════════════════════════════════════════════════════════════
+class TestPassAtK:
+    """pass@k:HumanEval 式无偏估计;pass^k:n 次采样全过的概率。"""
+
+    def test_boundary_all_or_none(self):
+        assert stats.pass_at_k(20, 20, 5) == 1.0   # 全过 → 必过
+        assert stats.pass_at_k(20, 0, 5) == 0.0    # 全挂 → 必不过
+
+    def test_point_estimate(self):
+        # c=15, n=20, k=1 → 15/20
+        assert stats.pass_at_k(20, 15, 1) == pytest.approx(0.75)
+
+    def test_n_minus_c_less_than_k(self):
+        # 失败数 n-c < k → 抽 k 个必然含一个通过的 → 1.0
+        assert stats.pass_at_k(20, 15, 25) == 1.0
+        assert stats.pass_at_k(20, 15, 21) == 1.0
+
+    def test_matches_bruteforce_combination(self):
+        # 与暴力组合数公式 1 - C(n-c,k)/C(n,k) 一致(n=10,c=7,k=3)
+        bruteforce = 1 - comb(3, 3) / comb(10, 3)
+        assert stats.pass_at_k(10, 7, 3) == pytest.approx(bruteforce, rel=1e-12)
+
+    def test_unbiasedness_simulation(self):
+        # 无偏性:真 p=0.7, n=20, k=5;估计均值应逼近解析真值
+        n, k, p = 20, 5, 0.7
+        true_val = sum(comb(n, j) * p**j * (1 - p) ** (n - j) for j in range(k, n + 1))
+        rng = random.Random(7)
+        ests = []
+        for _ in range(2500):
+            c = sum(1 for _ in range(n) if rng.random() < p)
+            ests.append(stats.pass_at_k(n, c, k))
+        assert abs(sum(ests) / len(ests) - true_val) < 0.01
+
+    def test_pass_pow_k(self):
+        # pass^k = (c/n)^k:每次采样结果独立的近似
+        assert stats.pass_pow_k(20, 15, 4) == pytest.approx(0.75**4)
+
+    def test_invalid_args(self):
+        # k>n 不算非法:k>n 时 n-c<k 必然成立,返回 1.0(见上)
+        for bad in [(0, 0, 1), (10, -1, 1), (10, 11, 1), (10, 5, 0)]:
+            with pytest.raises(ValueError):
+                stats.pass_at_k(*bad)
+        for bad in [(0, 0, 1), (10, -1, 1), (10, 11, 1), (10, 5, 0)]:
+            with pytest.raises(ValueError):
+                stats.pass_pow_k(*bad)
