@@ -128,6 +128,31 @@ lark-cli --version         # 确认已安装（≥1.0.60）
 ../projects/                 ← 【果实】搜广推开源项目(已移出本仓库到父目录，与 Resume 同级)
 ```
 
+## 🌱 学习闭环验证（Agent 吃自己的狗粮）
+
+LearnLoop 的设计目标是解决「学习路径无规划、进度无追踪、产出无沉淀」——本节以作者本人的求职学习为长期真实负载，验证这一闭环（仓库：[interview-prep](https://github.com/Zjrua/interview-prep)，私有）：
+
+| 学习线 | 产出 | 规模 |
+|--------|------|------|
+| D2L 深度学习 | 教材级 notebook（对齐《动手学深度学习》d2l-zh 原版叙事，实测输出入库） | 31 篇 |
+| Agent 技术 | 同风格教材（对话协议/Function Calling/ReAct/MCP/记忆/规划/RAG/评测/毕业项目） | 9 章 |
+| 金融量化 | 手写回测引擎与因子模型教材（真实A股数据） | 6 章 |
+| 算法 | LeetCode Hot 100（Python） | 17 题 |
+
+- 学习进度由双活文档（`docs/d2l-progress.md`）追踪，每日定时检查点（cron）驱动，费曼式口头自测留痕
+- 教材产出遵循统一文风规范（`d2l-study/REWRITE_STYLE.md`），盲审通过后入库
+
+## 🧩 技能沉淀（Skills）
+
+把 Agent 使用中反复出现的工作流封装为可复用 Skill（Markdown 过程性知识，供 Agent 按需加载），已沉淀 4 个：
+
+| Skill | 用途 |
+|-------|------|
+| `structured-self-study` | 系统化自学陪伴：精读→合卷输出→每日测验→进度档案，防"观光客式学习" |
+| `notebook-textbook-generation` | d2l 风格教材 notebook 编写流水线（含盲审验证） |
+| `chinese-city-policy-research` | 中国城市社保/公积金/房价参数核查（服务器受限网络的可靠检索路径） |
+| `skills/resume-editing` | 简历素材维护规范（数字必须可验证、素材与呈现分离） |
+
 ## 核心功能
 
 - **单画布 DAG 知识图谱**：所有方向合并去重成一张图，基础在上向下生长，贝塞尔曲线连线
